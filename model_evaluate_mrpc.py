@@ -26,7 +26,7 @@ dataset = load_dataset('glue', 'mrpc')
 
 
 def tokenize_function(example):
-    return tokenizer(example['sentence1'], example['sentence1'], truncation=True, padding='max_length', max_length=128)
+    return tokenizer(example['sentence1'], example['sentence2'], truncation=True, padding='max_length', max_length=128)
 
 tokenized_dataset = dataset.map(tokenize_function, batched=True)
 
@@ -62,31 +62,6 @@ def predict_paraphrase(s1, s2, tokenizer, model):
 
     # Return the probability that the two sentences are paraphrases
     return probabilities[0][1].item()
-
-# from sklearn.metrics import f1_score
-
-# curr = 0
-# y_pred = []
-# y_true = []
-# for i in range(len(dataset['test'])):
-#   s1 = dataset['test'][i]['sentence1']
-#   s2 = dataset['test'][i]['sentence2']
-#   prob = predict_paraphrase(s1, s2, tokenizer, model)
-#   if prob > 0.6:
-#     prob = 1
-#   else:
-#      prob = 0
-#   y_pred.append(prob)
-#   y_true.append(dataset['test'][i]['label'])
-#   if prob == dataset['test'][i]['label']:
-#     curr +=1
-
-# accuracy = curr/len(dataset['test'])
-# f1 = f1_score(y_true, y_pred)
-# print('acuracy before training:',accuracy,'f1 before train: {f1}')
-# print('acuracy before training:', round(accuracy,3), 'f1 before train:', round(f1,3))
-
-
 
 
 training_args = TrainingArguments(
