@@ -1,14 +1,13 @@
-import numpy as np
+import sys
 import torch
 import random
+import numpy as np
 
-from datasets import Dataset
-from datasets import load_dataset
 from torch.utils.data import DataLoader
-from transformers import BertConfig
+from datasets import Dataset, load_dataset
 from transformers import BertTokenizer, BertForMaskedLM, AdamW, BertConfig
 
-device = torch.device('cuda')
+device = torch.device('cuda:0')
 
 
 class Train:
@@ -33,7 +32,7 @@ class Train:
                 tokens = tokenizer(inputs['text'],
                                    padding=True,
                                    truncation=True,
-                                   max_length=128)
+                                   max_length=512)
 
                 tokens = tokens['input_ids']
                 labels = tokens.copy()
@@ -58,9 +57,6 @@ class Train:
                             for q in x:
                                 token[q] = tokenizer.mask_token_id
 
-                            # print(
-                            #     '//////////////////////////////////////////////////////////////////')
-
                         # 90% of the time, replace the token with a random token
                         elif prob < 0.9:
 
@@ -72,9 +68,6 @@ class Train:
                                     len(tokenizer), (1,)).item()
 
                             # 10% of the time, keep the original token
-
-                    # print(
-                    #     '____________________________________________________________________________')
 
                     if tokens[k] == tokenizer.mask_token_id:  # #######
                         labels[k] = token
@@ -91,13 +84,15 @@ class Train:
                 optimizer.step()
                 total_loss += loss.item()
 
-                if i % 5000 == 0:
+                if i % 500 == 0:
                     print(
                         f"Epoch {epoch+1}/{num_epochs} | Batch {i+1}/{len(train_loader)} | Loss: {loss.item():.4f}")
 
             avg_loss = total_loss / len(train_loader)
             print(
                 f"Epoch {epoch+1}/{num_epochs} | Average Loss: {avg_loss:.4f}")
+
+            wandb.log({"loss": avg_loss})
 
             model.eval()
             with torch.no_grad():
@@ -112,11 +107,8 @@ class Train:
                     inputs = tokens['input_ids']
                     labels = inputs.copy()
 
-                    inputs = torch.tensor(inputs)
-                    inputs = inputs.to(device)
-
-                    labels = torch.tensor(labels)
-                    labels = labels.to(device)
+                    inputs = torch.tensor(inputs).to(device)
+                    labels = torch.tensor(labels).to(device)
 
                     outputs = model(inputs, labels=labels)
                     loss = outputs.loss
@@ -129,16 +121,33 @@ class Train:
 
 if __name__ == "__main__":
 
-    batch_size = 32
-    learning_rate = 2e-5
-    num_epochs = 2
+    import wandb
+
+    batch_size = 16
+    learning_rate = 2e-4
+    num_epochs = 10
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+
+    old_stdout = sys.stdout
+
+    log_file = open("MyOutput.log", "w")
+
+    sys.stdout = log_file
 
     with open('data.txt') as f:
         lines = f.readlines()
 
-    train = lines[:16_000_000]
-    valid = lines[16_000_000:]
+    lenght_dataset = len(lines)
+
+    # print(lenght_dataset)
+
+    start = int(0.2 * lenght_dataset)
+    # end = int(0.006 * lenght_dataset)
+
+    # print(start)
+
+    train = lines[start:]
+    valid = lines[:start]
 
     train_data = []
     for item in train:
@@ -148,23 +157,37 @@ if __name__ == "__main__":
     for item in valid:
         valid_data.append({'text': item})
 
-    dataset = Dataset.from_list(train_data)
-    print(dataset)
+    train_dataset = Dataset.from_list(train_data)
+    print(train_dataset)
 
     valid_dataset = Dataset.from_list(valid_data)
     print(valid_dataset)
 
-    train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True)
+
     valid_loader = DataLoader(
         valid_dataset, batch_size=batch_size, shuffle=True)
 
     config = BertConfig()
     model = BertForMaskedLM(config=config)
     model.to(device)
+# _________________________________________________________________________________________________________
+    wandb.init(project="Sentence-Encoder-Unum",
 
+               config=config)
+
+    # Magic
+    wandb.watch(model, log_freq=100)
+# ___________________________________________________________________________________________________________
     optimizer = AdamW(model.parameters(), lr=learning_rate)
     print('----------------------------------------------------------------------------------')
     MyClass = Train(model=model, num_epochs=num_epochs, tokenizer=tokenizer,
                     train_loader=train_loader, valid_loader=valid_loader, optimizer=optimizer)
 
     MyClass.train()
+
+    sys.stdout = old_stdout
+    log_file.close()
+
+    # wandb.finish()
