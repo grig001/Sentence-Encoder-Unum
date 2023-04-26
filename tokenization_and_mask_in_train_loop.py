@@ -1,5 +1,6 @@
 import sys
 import torch
+import wandb
 import random
 import numpy as np
 
@@ -38,46 +39,45 @@ class Train:
                 labels = tokens.copy()
 
                 for k, token in enumerate(tokens):
-                    # Randomly mask 15% of the tokens
-                    # print(tokens[k] == token)
 
-                    # print('__________________________________________________')
+                    starting_token = token.copy()
 
-                    if torch.rand(1) < 0.15:
+                    if torch.rand(1) < 0.8:
 
                         prob = torch.rand(1).item()
-                        # print('prob equal to', prob)
 
-                        # 80% of the time, replace the token with [MASK]
-                        if prob < 0.8:
+                        if prob < 0.2:
 
                             x = random.sample(
-                                range(len(token)), int(0.8 * len(token)))
+                                range(len(token)), int(0.2 * len(token)))
 
                             for q in x:
                                 token[q] = tokenizer.mask_token_id
 
-                        # 90% of the time, replace the token with a random token
-                        elif prob < 0.9:
+                        elif prob < 0.4:
 
                             x = random.sample(
-                                range(len(token)), int(0.9 * len(token)))
+                                range(len(token)), int(0.4 * len(token)))
 
                             for q in x:
                                 token[q] = torch.randint(
                                     len(tokenizer), (1,)).item()
 
-                            # 10% of the time, keep the original token
+                    # print(tokenizer.mask_token_id) == 103
 
-                    if tokens[k] == tokenizer.mask_token_id:  # #######
-                        labels[k] = token
+                    labels[k] = token
+                    print(f'starting token ---> {starting_token}')
+                    print(f'ending token ---> {token}')
+                    print(
+                        f'comparing starting and finishing tokens {np.array(token) == np.array(starting_token)}')
 
-                tokens = torch.tensor(tokens)
-                labels = torch.tensor(labels)
+                    print(
+                        '______________________________________________________________________')
+                tokens = torch.tensor(tokens).to(device)
+                labels = torch.tensor(labels).to(device)
 
-                tokens = tokens.to(device)
-                labels = labels.to(device)
                 optimizer.zero_grad()
+
                 outputs = model(tokens, labels=labels)
                 loss = outputs.loss
                 loss.backward()
@@ -102,7 +102,7 @@ class Train:
                     tokens = tokenizer(inputs['text'],
                                        padding=True,
                                        truncation=True,
-                                       max_length=128)
+                                       max_length=512)
 
                     inputs = tokens['input_ids']
                     labels = inputs.copy()
@@ -121,8 +121,6 @@ class Train:
 
 if __name__ == "__main__":
 
-    import wandb
-
     batch_size = 16
     learning_rate = 2e-4
     num_epochs = 10
@@ -134,17 +132,12 @@ if __name__ == "__main__":
 
     sys.stdout = log_file
 
-    with open('data.txt') as f:
+    with open('my_data.csv') as f:
         lines = f.readlines()
 
     lenght_dataset = len(lines)
 
-    # print(lenght_dataset)
-
-    start = int(0.2 * lenght_dataset)
-    # end = int(0.006 * lenght_dataset)
-
-    # print(start)
+    start = int(0.3 * lenght_dataset)
 
     train = lines[start:]
     valid = lines[:start]
@@ -177,7 +170,6 @@ if __name__ == "__main__":
 
                config=config)
 
-    # Magic
     wandb.watch(model, log_freq=100)
 # ___________________________________________________________________________________________________________
     optimizer = AdamW(model.parameters(), lr=learning_rate)
