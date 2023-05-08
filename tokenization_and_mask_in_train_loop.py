@@ -3,16 +3,22 @@ import torch
 import wandb
 import random
 import numpy as np
+import torch.distributed as dist
 
+
+from datasets import Dataset
+from argparse import ArgumentParser
 from torch.utils.data import DataLoader
-from datasets import Dataset, load_dataset
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import BertTokenizer, BertForMaskedLM, AdamW, BertConfig
 
 device = torch.device('cuda:0')
 
 
 class Train:
-    def __init__(self, model, num_epochs, tokenizer, train_loader, valid_loader, optimizer) -> None:
+    def __init__(self, model, num_epochs, tokenizer, train_loader, valid_loader,
+                 optimizer) -> None:
 
         self.model = model
         self.num_epochs = num_epochs
@@ -20,6 +26,9 @@ class Train:
         self.train_loader = train_loader
         self.valid_loader = valid_loader
         self.optimazer = optimizer
+        # self.local_world_size = local_world_size
+        # self.local_rank = local_rank
+        # self.ddp_model = ddp_model
 
     def train(self):
 
@@ -28,7 +37,11 @@ class Train:
             total_loss = 0
             model.train()
 
+            # dist.barrier()
+
             for i, inputs in enumerate(train_loader):
+
+                # batch = tuple(t.to(args.device) for t in batch)
 
                 tokens = tokenizer(inputs['text'],
                                    padding=True,
@@ -42,44 +55,38 @@ class Train:
 
                     starting_token = token.copy()
 
-                    if torch.rand(1) < 0.8:
+                    x = random.sample(
+                        range(len(token)), int(len(token)))
 
-                        prob = torch.rand(1).item()
+                    mask_1 = int(0.8 * len(x))
+                    mask_2 = int(0.9 * len(x))
 
-                        if prob < 0.2:
+                    for ind in range(mask_1):
+                        token[x[ind]] = tokenizer.mask_token_id
 
-                            x = random.sample(
-                                range(len(token)), int(0.2 * len(token)))
-
-                            for q in x:
-                                token[q] = tokenizer.mask_token_id
-
-                        elif prob < 0.4:
-
-                            x = random.sample(
-                                range(len(token)), int(0.4 * len(token)))
-
-                            for q in x:
-                                token[q] = torch.randint(
-                                    len(tokenizer), (1,)).item()
-
-                    # print(tokenizer.mask_token_id) == 103
+                    for ind in range(mask_1, mask_2):
+                        token[x[ind]] = torch.randint(
+                            len(tokenizer), (1,)).item()
 
                     labels[k] = token
                     print(f'starting token ---> {starting_token}')
                     print(f'ending token ---> {token}')
                     print(
-                        f'comparing starting and finishing tokens {np.array(token) == np.array(starting_token)}')
+                        f'comparing starting and finishing tokens ---> {np.array(token) == np.array(starting_token)}')
 
                     print(
                         '______________________________________________________________________')
+
                 tokens = torch.tensor(tokens).to(device)
                 labels = torch.tensor(labels).to(device)
 
                 optimizer.zero_grad()
 
                 outputs = model(tokens, labels=labels)
+                # outputs = model(*batch)
+
                 loss = outputs.loss
+                # loss = outputs[0]
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
@@ -91,8 +98,6 @@ class Train:
             avg_loss = total_loss / len(train_loader)
             print(
                 f"Epoch {epoch+1}/{num_epochs} | Average Loss: {avg_loss:.4f}")
-
-            wandb.log({"loss": avg_loss})
 
             model.eval()
             with torch.no_grad():
@@ -111,26 +116,50 @@ class Train:
                     labels = torch.tensor(labels).to(device)
 
                     outputs = model(inputs, labels=labels)
+
                     loss = outputs.loss
                     total_loss += loss.item()
 
-                avg_loss = total_loss / len(train_loader)
+                val_avg_loss = total_loss / len(train_loader)
                 print(
-                    f"Epoch {epoch+1}/{num_epochs} | Validation Loss: {avg_loss:.4f}")
+                    f"Epoch {epoch+1}/{num_epochs} | Validation Loss: {val_avg_loss:.4f}")
+
+            wandb.log({"loss": avg_loss, "valid_loss": val_avg_loss})
 
 
 if __name__ == "__main__":
 
-    batch_size = 16
+    old_stdout = sys.stdout
+    log_file = open("MyOutput.log", "w")
+    sys.stdout = log_file
+
+    parser = ArgumentParser()
+    parser.add_argument("--local_rank", type=int, default=-1, metavar='N')
+    parser.add_argument("--local_world_size", type=int, default=1)
+    args = parser.parse_args()
+    local_world_size, local_rank = args.local_world_size, args.local_rank
+
+    args.is_master = args.local_rank == 0
+    args.device = torch.cuda.device(args.local_rank)
+
+    dist.init_process_group(backend='nccl')
+    torch.cuda.set_device(args.local_rank)
+
+    n = torch.cuda.device_count() // local_world_size
+    device_ids = list(range(local_rank * n, (local_rank + 1) * n))
+
+    SEED = 42
+    # torch.cuda.manual_seed_all(SEED)
+
+    # print(n)
+    # print(device_ids)
+    # print()
+    # print()
+
+    batch_size = 8
     learning_rate = 2e-4
     num_epochs = 10
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-
-    old_stdout = sys.stdout
-
-    log_file = open("MyOutput.log", "w")
-
-    sys.stdout = log_file
 
     with open('my_data.csv') as f:
         lines = f.readlines()
@@ -165,21 +194,30 @@ if __name__ == "__main__":
     config = BertConfig()
     model = BertForMaskedLM(config=config)
     model.to(device)
+
+    model = DDP(
+        model,
+        device_ids=[args.local_rank],
+        output_device=args.local_rank
+    )
+    ddp_model = DDP(model, device_ids)
+
 # _________________________________________________________________________________________________________
     wandb.init(project="Sentence-Encoder-Unum",
-
                config=config)
 
     wandb.watch(model, log_freq=100)
 # ___________________________________________________________________________________________________________
+
     optimizer = AdamW(model.parameters(), lr=learning_rate)
-    print('----------------------------------------------------------------------------------')
-    MyClass = Train(model=model, num_epochs=num_epochs, tokenizer=tokenizer,
-                    train_loader=train_loader, valid_loader=valid_loader, optimizer=optimizer)
+
+    print('--------------------------------------------------------------------------------------------')
+    MyClass = Train(
+        model=model, num_epochs=num_epochs, tokenizer=tokenizer,
+        train_loader=train_loader, valid_loader=valid_loader, optimizer=optimizer,
+    )
 
     MyClass.train()
 
     sys.stdout = old_stdout
     log_file.close()
-
-    # wandb.finish()
